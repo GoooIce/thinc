@@ -64,6 +64,14 @@ def test_categorical_crossentropy(guesses, labels):
 
 
 @pytest.mark.parametrize(
+    "guesses, labels", [(guesses1, labels1), (guesses1, labels1_full)]
+)
+def test_categorical_crossentropy_missing(guesses, labels):
+    d_scores = CategoricalCrossentropy(normalize=True).get_grad(guesses, labels)
+    assert d_scores.shape == guesses.shape
+
+
+@pytest.mark.parametrize(
     "guesses, labels",
     [
         ([guesses1, guesses2], [labels1, labels2]),
@@ -71,33 +79,39 @@ def test_categorical_crossentropy(guesses, labels):
     ],
 )
 def test_sequence_categorical_crossentropy(guesses, labels):
-    d_scores = SequenceCategoricalCrossentropy(normalize=True).get_grad(guesses, labels)
+    d_scores = SequenceCategoricalCrossentropy(normalize=False).get_grad(
+        guesses, labels
+    )
     d_scores1 = d_scores[0]
     d_scores2 = d_scores[1]
     assert d_scores1.shape == guesses1.shape
     assert d_scores2.shape == guesses2.shape
+    assert d_scores1[1][0] == pytest.approx(0.4, eps)
+    assert d_scores1[1][1] == pytest.approx(-0.4, eps)
+    # The normalization divides the difference (e.g. 0.4) by the number of seqs
+    d_scores = SequenceCategoricalCrossentropy(normalize=True).get_grad(guesses, labels)
+    d_scores1 = d_scores[0]
+    d_scores2 = d_scores[1]
 
-    # The normalization divides the difference (e.g. 0.4) by the number of vectors (4)
-    assert d_scores1[1][0] == pytest.approx(0.1, eps)
-    assert d_scores1[1][1] == pytest.approx(-0.1, eps)
+    assert d_scores1[1][0] == pytest.approx(0.2, eps)
+    assert d_scores1[1][1] == pytest.approx(-0.2, eps)
 
     # The third vector predicted all labels, but only the first one was correct
     assert d_scores1[2][0] == pytest.approx(0, eps)
-    assert d_scores1[2][1] == pytest.approx(0.25, eps)
-    assert d_scores1[2][2] == pytest.approx(0.25, eps)
+    assert d_scores1[2][1] == pytest.approx(0.5, eps)
+    assert d_scores1[2][2] == pytest.approx(0.5, eps)
 
     # The fourth vector predicted no labels but should have predicted the last one
     assert d_scores1[3][0] == pytest.approx(0, eps)
     assert d_scores1[3][1] == pytest.approx(0, eps)
-    assert d_scores1[3][2] == pytest.approx(-0.25, eps)
+    assert d_scores1[3][2] == pytest.approx(-0.5, eps)
 
     # Test the second batch
-    assert d_scores2[0][0] == pytest.approx(0.2, eps)
-    assert d_scores2[0][1] == pytest.approx(-0.7, eps)
+    assert d_scores2[0][0] == pytest.approx(0.1, eps)
+    assert d_scores2[0][1] == pytest.approx(-0.35, eps)
 
-    losses = SequenceCategoricalCrossentropy(normalize=True).get_loss(guesses, labels)
-    assert losses[0] == pytest.approx(0.239375, eps)
-    assert losses[1] == pytest.approx(0.529999, eps)
+    loss = SequenceCategoricalCrossentropy(normalize=True).get_loss(guesses, labels)
+    assert loss == pytest.approx(1.09, eps)
 
 
 def test_L2():
@@ -176,7 +190,7 @@ def test_loss_from_config(name, kwargs, args):
     """Test that losses are loaded and configured correctly from registry
     (as partials)."""
     cfg = {"test": {"@losses": name, **kwargs}}
-    func = registry.make_from_config(cfg)["test"]
+    func = registry.resolve(cfg)["test"]
     loss = func.get_grad(*args)
     if isinstance(loss, (list, tuple)):
         loss = loss[0]

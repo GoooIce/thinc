@@ -3,10 +3,10 @@ from .cauchysimilarity import CauchySimilarity
 from .dropout import Dropout
 from .embed import Embed
 from .expand_window import expand_window
-from .featureextractor import FeatureExtractor
 from .hashembed import HashEmbed
 from .layernorm import LayerNorm
 from .linear import Linear
+from .lstm import LSTM, PyTorchLSTM
 from .logistic import Logistic
 from .maxout import Maxout
 from .mish import Mish
@@ -14,11 +14,11 @@ from .multisoftmax import MultiSoftmax
 from .parametricattention import ParametricAttention
 from .pytorchwrapper import PyTorchWrapper, PyTorchRNNWrapper
 from .relu import Relu
+from .sigmoid_activation import sigmoid_activation
+from .sigmoid import Sigmoid
 from .softmax_activation import softmax_activation
 from .softmax import Softmax
 from .sparselinear import SparseLinear
-from .staticvectors import StaticVectors
-from .lstm import LSTM, PyTorchLSTM
 from .tensorflowwrapper import TensorFlowWrapper, keras_subclass
 from .mxnetwrapper import MXNetWrapper
 
@@ -34,6 +34,8 @@ from .uniqued import uniqued
 from .siamese import siamese
 
 # Pooling
+from .reduce_first import reduce_first
+from .reduce_last import reduce_last
 from .reduce_max import reduce_max
 from .reduce_mean import reduce_mean
 from .reduce_sum import reduce_sum
@@ -50,6 +52,7 @@ from .padded2list import padded2list
 from .remap_ids import remap_ids
 from .strings2arrays import strings2arrays
 from .with_array import with_array
+from .with_array2d import with_array2d
 from .with_cpu import with_cpu
 from .with_flatten import with_flatten
 from .with_padded import with_padded
@@ -68,19 +71,20 @@ __all__ = [
     "expand_window",
     "HashEmbed",
     "LayerNorm",
+    "LSTM",
     "Maxout",
     "Mish",
     "MultiSoftmax",
     "ParametricAttention",
+    "PyTorchLSTM",
     "PyTorchWrapper",
     "PyTorchRNNWrapper",
     "Relu",
+    "sigmoid_activation",
+    "Sigmoid"
     "softmax_activation",
     "Softmax",
     "SparseLinear",
-    "StaticVectors",
-    "LSTM",
-    "PyTorchLSTM",
     "TensorFlowWrapper",
     "add",
     "bidirectional",
@@ -91,6 +95,8 @@ __all__ = [
     "residual",
     "uniqued",
     "siamese",
+    "reduce_first",
+    "reduce_last",
     "reduce_max",
     "reduce_mean",
     "reduce_sum",
@@ -102,6 +108,7 @@ __all__ = [
     "with_reshape",
     "with_getitem",
     "with_array",
+    "with_array2d",
     "with_cpu",
     "with_list",
     "with_ragged",

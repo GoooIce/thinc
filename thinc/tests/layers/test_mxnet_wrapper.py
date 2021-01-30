@@ -2,9 +2,8 @@ from typing import cast
 
 import numpy
 import pytest
-from thinc.api import Adam, ArgsKwargs, Linear, Model, Ops, MXNetWrapper
+from thinc.api import Adam, ArgsKwargs, Model, Ops, MXNetWrapper
 from thinc.api import get_current_ops, mxnet2xp, xp2mxnet
-from thinc.api import chain, Mish
 from thinc.types import Array2d, Array1d, IntsXd
 from thinc.util import has_mxnet, to_categorical
 
@@ -40,7 +39,10 @@ def X(input_size: int) -> Array2d:
 @pytest.fixture
 def Y(answer: int, n_classes: int) -> Array2d:
     ops: Ops = get_current_ops()
-    return to_categorical(cast(IntsXd, ops.asarray([answer])), n_classes=n_classes)
+    return cast(
+        Array2d,
+        to_categorical(cast(IntsXd, ops.asarray([answer])), n_classes=n_classes),
+    )
 
 
 @pytest.fixture

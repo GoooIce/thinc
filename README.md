@@ -29,23 +29,30 @@ configure and deploy custom models** built with their favorite framework.
 - Concise **functional-programming** approach to model definition, using composition rather than inheritance.
 - Optional custom infix notation via **operator overloading**.
 - Integrated **config system** to describe trees of objects and hyperparameters.
-- Choice of **extensible backends**, including [JAX](https://github.com/google/jax) support _(experimental)_.
+- Choice of **extensible backends**.
 - **[Read more &rarr;](https://thinc.ai/docs)**
 
 ## 🚀 Quickstart
 
 Thinc is compatible with **Python 3.6+** and runs on **Linux**,
 **macOS** and **Windows**. The latest releases with binary wheels are available from
-[pip](https://pypi.python.org/pypi/thinc).
+[pip](https://pypi.python.org/pypi/thinc). Before you install Thinc and its
+dependencies, make sure that your `pip`, `setuptools` and `wheel` are up to
+date. For the most recent releases, pip 19.3 or newer is recommended.
 
 ```bash
-pip install thinc==8.0.0a1
+pip install -U pip setuptools wheel
+pip install thinc --pre
 ```
 
 > ⚠️ Note that Thinc 8.0 is currently **in alpha preview** and not necessarily ready
 > for production yet.
 
 See the [extended installation docs](https://thinc.ai/docs/install#extended) for details on optional dependencies for different backends and GPU. You might also want to [set up static type checking](https://thinc.ai/docs/install#type-checking) to take advantage of Thinc's type system.
+
+> ⚠️ If you have installed PyTorch and you are using Python 3.7+, uninstall the
+> package `dataclasses` with `pip uninstall dataclasses`, since it may have
+> been installed by PyTorch and is incompatible with Python 3.7+.
 
 ### 📓 Selected examples and notebooks
 
@@ -94,7 +101,7 @@ Also see the [`/examples`](examples) directory and [usage documentation](https:/
 | [`thinc.loss`](thinc/loss.py)             | Functions to calculate losses.                                                    |
 | [`thinc.optimizers`](thinc/optimizers.py) | Functions to create optimizers. Currently supports "vanilla" SGD, Adam and RAdam. |
 | [`thinc.schedules`](thinc/schedules.py)   | Generators for different rates, schedules, decays or series.                      |
-| [`thinc.backends`](thinc/backends.py)     | Backends for `numpy`, `cupy` and `jax`.                                           |
+| [`thinc.backends`](thinc/backends.py)     | Backends for `numpy` and `cupy`.                                       |
 | [`thinc.config`](thinc/config.py)         | Config parsing and validation and function registry system.                       |
 | [`thinc.util`](thinc/util.py)             | Utilities and helper functions.                                                   |
 
@@ -104,13 +111,30 @@ Thinc uses [`black`](https://github.com/psf/black) for auto-formatting, [`flake8
 
 ### 👷‍♀️ Building Thinc from source
 
-Building Thinc from source requires the full dependencies listed in [`requirements.txt`](requirements.txt) to be installed. You'll also need a compiler to build the C extensions.
+Building Thinc from source requires the full dependencies listed in
+[`requirements.txt`](requirements.txt) to be installed. You'll also need a
+compiler to build the C extensions.
 
 ```bash
 git clone https://github.com/explosion/thinc
 cd thinc
 python -m venv .env
 source .env/bin/activate
+pip install -U pip setuptools wheel
+pip install -r requirements.txt
+pip install --no-build-isolation .
+```
+
+Alternatively, install in editable mode:
+
+```bash
+pip install -r requirements.txt
+pip install --no-build-isolation --editable .
+```
+
+Or by setting `PYTHONPATH`:
+
+```bash
 export PYTHONPATH=`pwd`
 pip install -r requirements.txt
 python setup.py build_ext --inplace

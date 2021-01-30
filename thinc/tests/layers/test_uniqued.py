@@ -1,7 +1,7 @@
 import pytest
 import numpy
 from thinc.layers import Embed
-from ...layers.uniqued import uniqued
+from thinc.layers.uniqued import uniqued
 from numpy.testing import assert_allclose
 from hypothesis import given
 from hypothesis.strategies import integers, lists, composite
@@ -12,8 +12,10 @@ ROWS = 10
 # I used previously. This is much nicer, although it still takes some getting
 # used to. The key feature is this composite decorator. It injects a function,
 # 'draw'.
+
+
 @composite
-def lists_of_integers(draw, columns=2, lo=0, hi=ROWS-1):
+def lists_of_integers(draw, columns=2, lo=0, hi=ROWS - 1):
     # We call draw to get example values, which we can manipulate.
     # Here we get a list of integers, where each member of the list
     # should be between a min and max value.
@@ -27,7 +29,7 @@ def lists_of_integers(draw, columns=2, lo=0, hi=ROWS-1):
     return array.reshape((-1, columns))
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def model(nO=128):
     return Embed(nO, ROWS, column=0).initialize()
 
@@ -43,7 +45,7 @@ def test_uniqued_calls_init():
     assert calls == [True, True]
 
 
-@given(X=lists_of_integers(lo=0, hi=ROWS-1))
+@given(X=lists_of_integers(lo=0, hi=ROWS - 1))
 def test_uniqued_doesnt_change_result(model, X):
     umodel = uniqued(model, column=model.attrs["column"]).initialize()
     Y, bp_Y = model(X, is_train=True)

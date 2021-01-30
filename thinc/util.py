@@ -8,7 +8,11 @@ from pydantic import create_model, ValidationError
 import inspect
 import os
 import tempfile
+import threading
 import contextlib
+from contextvars import ContextVar
+
+DATA_VALIDATION: ContextVar[bool] = ContextVar("DATA_VALIDATION", default=False)
 
 try:  # pragma: no cover
     import cupy
@@ -18,14 +22,6 @@ except (ImportError, AttributeError):
     cupy = None
     has_cupy = False
 
-try:  # pragma: no cover
-    import jax
-    import jax.numpy
-
-    has_jax = True
-except ImportError:  # pragma: no cover
-    jax = None
-    has_jax = False
 
 try:  # pragma: no cover
     import torch
@@ -37,6 +33,7 @@ except ImportError:  # pragma: no cover
     has_torch = False
 
 try:  # pragma: no cover
+    import tensorflow.experimental.dlpack
     import tensorflow as tf
 
     has_tensorflow = True
@@ -51,29 +48,41 @@ try:  # pragma: no cover
 except ImportError:  # pragma: no cover
     has_mxnet = False
 
-from .types import ArrayXd, ArgsKwargs, Ragged, Padded, Floats2d, IntsXd
+from .types import ArrayXd, ArgsKwargs, Ragged, Padded, FloatsXd, IntsXd
 
 
 def get_array_module(arr):  # pragma: no cover
     if is_cupy_array(arr):
         return cupy
-    elif is_jax_array(arr):
-        return jax.numpy
     else:
         return numpy
+
+
+def gpu_is_available():
+    try:
+        cupy.cuda.runtime.getDeviceCount()
+        return True
+    except cupy.cuda.runtime.CUDARuntimeError:
+        return False
 
 
 def fix_random_seed(seed: int = 0) -> None:  # pragma: no cover
     """Set the random seed across random, numpy.random and cupy.random."""
     random.seed(seed)
     numpy.random.seed(seed)
-    if cupy is not None:
+    if has_torch:
+        torch.manual_seed(seed)
+    if has_cupy and gpu_is_available():
         cupy.random.seed(seed)
+        if has_torch and torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
 
 def is_xp_array(obj: Any) -> bool:
     """Check whether an object is a numpy or cupy array."""
-    return is_numpy_array(obj) or is_cupy_array(obj) or is_jax_array(obj)
+    return is_numpy_array(obj) or is_cupy_array(obj) 
 
 
 def is_cupy_array(obj: Any) -> bool:  # pragma: no cover
@@ -81,19 +90,6 @@ def is_cupy_array(obj: Any) -> bool:  # pragma: no cover
     if not has_cupy:
         return False
     elif isinstance(obj, cupy.ndarray):
-        return True
-    else:
-        return False
-
-
-def is_jax_array(obj: Any) -> bool:  # pragma: no cover
-    """Check whether an object is a jax.numpy array"""
-    if not has_jax:
-        return False
-    elif isinstance(obj, numpy.ndarray):
-        # Numpy arrays evaluate as True for instance of jax.numpy.ndarray :(
-        return False
-    elif isinstance(obj, jax.numpy.ndarray):
         return True
     else:
         return False
@@ -139,8 +135,6 @@ def to_numpy(data):  # pragma: no cover
         return data
     elif has_cupy and isinstance(data, cupy.ndarray):
         return data.get()
-    elif has_jax and isinstance(data, jax.numpy.ndarray):
-        return jax.device_get(data)
     else:
         return numpy.array(data)
 
@@ -159,6 +153,14 @@ def set_active_gpu(gpu_id: int) -> "cupy.cuda.Device":  # pragma: no cover
     except ImportError:
         pass
     return device
+
+
+def require_cpu() -> bool:  # pragma: no cover
+    """Use CPU through NumpyOps"""
+    from .backends import set_current_ops, NumpyOps
+
+    set_current_ops(NumpyOps())
+    return True
 
 
 def prefer_gpu(gpu_id: int = 0) -> bool:  # pragma: no cover
@@ -193,18 +195,20 @@ def copy_array(dst: ArrayXd, src: ArrayXd) -> None:  # pragma: no cover
         numpy.copyto(dst, src)
 
 
-def to_categorical(Y: IntsXd, n_classes: Optional[int] = None) -> Floats2d:
+def to_categorical(Y: IntsXd, n_classes: Optional[int] = None) -> FloatsXd:
     # From keras
     xp = get_array_module(Y)
     if xp is cupy:  # pragma: no cover
         Y = Y.get()
-    Y = numpy.array(Y, dtype="int").ravel()
-    if not n_classes:
-        n_classes = numpy.max(Y) + 1
+    keep_shapes: List[int] = list(Y.shape)
+    Y = numpy.array(Y, dtype="int").ravel() # type: ignore
+    if n_classes is None:
+        n_classes = int(numpy.max(Y) + 1)
+    keep_shapes.append(n_classes)
     n = Y.shape[0]
     categorical = numpy.zeros((n, n_classes), dtype="float32")
     categorical[numpy.arange(n), Y] = 1
-    return xp.asarray(categorical)
+    return xp.asarray(categorical).reshape(keep_shapes)
 
 
 def get_width(
@@ -309,29 +313,41 @@ def xp2tensorflow(
 ) -> "tf.Tensor":  # pragma: no cover
     """Convert a numpy or cupy tensor to a TensorFlow Tensor or Variable"""
     assert_tensorflow_installed()
-    tensorflow_tensor = tf.convert_to_tensor(xp_tensor)
+    if hasattr(xp_tensor, "toDlpack"):
+        dlpack_tensor = xp_tensor.toDlpack() # type: ignore
+        tf_tensor = tensorflow.experimental.dlpack.from_dlpack(dlpack_tensor)
+    else:
+        tf_tensor = tf.convert_to_tensor(xp_tensor)
     if as_variable:
         # tf.Variable() automatically puts in GPU if available.
         # So we need to control it using the context manager
-        with tf.device(tensorflow_tensor.device):
-            tensorflow_tensor = tf.Variable(tensorflow_tensor, trainable=requires_grad)
+        with tf.device(tf_tensor.device):
+            tf_tensor = tf.Variable(tf_tensor, trainable=requires_grad)
     if requires_grad is False and as_variable is False:
         # tf.stop_gradient() automatically puts in GPU if available.
         # So we need to control it using the context manager
-        with tf.device(tensorflow_tensor.device):
-            tensorflow_tensor = tf.stop_gradient(tensorflow_tensor)
-    return tensorflow_tensor
+        with tf.device(tf_tensor.device):
+            tf_tensor = tf.stop_gradient(tf_tensor)
+    return tf_tensor
 
 
-def tensorflow2xp(tensorflow_tensor: "tf.Tensor") -> ArrayXd:  # pragma: no cover
+def tensorflow2xp(tf_tensor: "tf.Tensor") -> ArrayXd:  # pragma: no cover
     """Convert a Tensorflow tensor to numpy or cupy tensor."""
     assert_tensorflow_installed()
-    return tensorflow_tensor.numpy()
+    if tf_tensor.device is not None:
+        _, device_type, device_num = tf_tensor.device.rsplit(":", 2)
+    else:
+        device_type = "CPU"
+    if device_type == "CPU" or not has_cupy:
+        return tf_tensor.numpy()
+    else:
+        dlpack_tensor = tensorflow.experimental.dlpack.to_dlpack(tf_tensor)
+        return cupy.fromDlpack(dlpack_tensor)
 
 
 def xp2mxnet(
     xp_tensor: ArrayXd, requires_grad: bool = False
-) -> "torch.Tensor":  # pragma: no cover
+) -> "mx.nd.NDArray":  # pragma: no cover
     """Convert a numpy or cupy tensor to a MXNet tensor."""
     if hasattr(xp_tensor, "toDlpack"):
         dlpack_tensor = xp_tensor.toDlpack()  # type: ignore
@@ -418,7 +434,7 @@ def validate_fwd_input_output(
     try:
         ArgModel.parse_obj(args)
     except ValidationError as e:
-        raise DataValidationError(name, X, Y, e.errors())
+        raise DataValidationError(name, X, Y, e.errors()) from None
 
 
 @contextlib.contextmanager
@@ -427,6 +443,15 @@ def make_tempfile(mode="r"):
     yield f
     f.close()
     os.remove(f.name)
+
+
+@contextlib.contextmanager
+def data_validation(validation):
+    with threading.Lock():
+        prev = DATA_VALIDATION.get()
+        DATA_VALIDATION.set(validation)
+        yield
+        DATA_VALIDATION.set(prev)
 
 
 __all__ = [

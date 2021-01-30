@@ -11,7 +11,7 @@ import threading
 from .backends import ParamServer, Ops, NumpyOps, CupyOps, get_current_ops
 from .optimizers import Optimizer  # noqa: F401
 from .shims import Shim
-from .util import convert_recursive, is_xp_array
+from .util import convert_recursive, is_xp_array, DATA_VALIDATION
 from .util import partial, validate_fwd_input_output
 from .types import FloatsXd
 
@@ -21,7 +21,6 @@ OutT = TypeVar("OutT")
 SelfT = TypeVar("SelfT", bound="Model")
 
 context_operators: ContextVar[dict] = ContextVar("context_operators", default={})
-DATA_VALIDATION: ContextVar[bool] = ContextVar("DATA_VALIDATION", default=True)
 
 
 def empty_init(model: "Model", *args, **kwargs) -> "Model":
@@ -180,12 +179,18 @@ class Model(Generic[InT, OutT]):
     def set_dim(self, name: str, value: int) -> None:
         """Set a value for a dimension."""
         if name not in self._dims:
-            raise KeyError(f"Cannot set unknown dimension '{name}' for model '{self.name}'.")
+            raise KeyError(
+                f"Cannot set unknown dimension '{name}' for model '{self.name}'."
+            )
         old_value = self._dims[name]
         if old_value is not None and old_value != value:
             err = f"Attempt to change dimension '{name}' for model '{self.name}' from {old_value} to {value}"
             raise ValueError(err)
         self._dims[name] = value
+
+    def maybe_get_dim(self, name: str) -> Optional[int]:
+        """Retrieve the value of a dimension of the given name, or None."""
+        return self.get_dim(name) if self.has_dim(name) else None
 
     def has_param(self, name: str) -> Optional[bool]:
         """Check whether the model has a weights parameter of the given name.
@@ -209,6 +214,10 @@ class Model(Generic[InT, OutT]):
             )
         return self._params.get_param(self.id, name)
 
+    def maybe_get_param(self, name: str) -> Optional[FloatsXd]:
+        """Retrieve a weights parameter by name, or None."""
+        return self.get_param(name) if self.has_param(name) else None
+
     def set_param(self, name: str, value: Optional[FloatsXd]) -> None:
         """Set a weights parameter's value."""
         if value is None:
@@ -229,6 +238,10 @@ class Model(Generic[InT, OutT]):
     def set_grad(self, name: str, value: FloatsXd) -> None:
         """Set a gradient value for the model."""
         self._params.set_grad(self.id, name, value)
+
+    def maybe_get_grad(self, name: str) -> Optional[FloatsXd]:
+        """Retrieve a gradient by name, or None."""
+        return self.get_grad(name) if self.has_grad(name) else None
 
     def inc_grad(self, name: str, value: FloatsXd) -> None:
         """Increment the gradient of a parameter by a value."""
@@ -255,6 +268,10 @@ class Model(Generic[InT, OutT]):
             raise ValueError(err)
         else:
             return value
+
+    def maybe_get_ref(self, name: str) -> Optional["Model"]:
+        """Retrieve the value of a reference if it exists, or None."""
+        return self.get_ref(name) if self.has_ref(name) else None
 
     def set_ref(self, name: str, value: Optional["Model"]) -> None:
         """Set a value for a reference."""
@@ -299,19 +316,15 @@ class Model(Generic[InT, OutT]):
         with each parameter and gradient of the model.
         """
         for node in self.walk():
-            orig_ops = node.ops
-            for name in node.param_names:
-                if node.has_grad(name):
-                    param = node.get_param(name)
-                    grad = node.get_grad(name)
-                    if hasattr(optimizer, 'ops'):
-                        param = optimizer.ops.asarray(param)        # type: ignore
-                        grad = optimizer.ops.asarray(grad)          # type: ignore
-                    param, grad = optimizer((node.id, name), param, grad)
-                    node.set_param(name, orig_ops.asarray(param))   # type: ignore
-                    node.set_grad(name, orig_ops.asarray(grad))     # type: ignore
             for shim in node.shims:
                 shim.finish_update(optimizer)
+        for node in self.walk():
+            for name in node.param_names:
+                if node.has_grad(name):
+                    param, grad = optimizer(
+                        (node.id, name), node.get_param(name), node.get_grad(name)
+                    )
+                    node.set_param(name, param)
 
     @contextlib.contextmanager
     def use_params(self, params: Dict[Tuple[int, str], FloatsXd]):
@@ -383,11 +396,8 @@ class Model(Generic[InT, OutT]):
         value.
         """
         params = {}
-        grads = {}
         for name in self.param_names:
             params[name] = self.get_param(name) if self.has_param(name) else None
-        for name in self.grad_names:
-            grads[name] = self.get_grad(name)
 
         copied: Model[InT, OutT] = Model(
             self.name,
@@ -407,8 +417,7 @@ class Model(Generic[InT, OutT]):
         """Transfer the model to a given GPU device."""
         import cupy.cuda.device
 
-        device = cupy.cuda.device.Device(gpu_id)
-        with device.use():
+        with cupy.cuda.device.Device(gpu_id):
             self._to_ops(CupyOps())
 
     def to_cpu(self) -> None:  # pragma: no cover
@@ -425,7 +434,7 @@ class Model(Generic[InT, OutT]):
                 if node.has_grad(name):
                     node.set_grad(name, ops.asarray_f(node.get_grad(name)))
             for shim in node.shims:
-                shim.to_device(ops.device_type)
+                shim.to_device(ops.device_type, ops.device_id)
 
     def to_bytes(self) -> bytes:
         """Serialize the model to a bytes representation. Models are usually
@@ -548,10 +557,87 @@ class Model(Generic[InT, OutT]):
                 loaded_value = deserialize_attr(default_value, value, attr, node)
                 node.attrs[attr] = loaded_value
             for param_name, value in msg["params"][i].items():
+                if value is not None:
+                    value = node.ops.asarray(value).copy()
                 node.set_param(param_name, value)
             for i, shim_bytes in enumerate(msg["shims"][i]):
                 node.shims[i].from_bytes(shim_bytes)
         return self
+
+
+    def can_from_disk(self, path: Union[Path, str], *, strict: bool=True) -> bool:
+        """Check whether serialized data on disk is compatible with the model.
+        If 'strict', the function returns False if the model has an attribute
+        already loaded that would be changed.
+        """
+        path = Path(path)
+        if path.is_dir() or not path.exists():
+            return False
+        with path.open("rb") as file_:
+            bytes_data = file_.read()
+        return self.can_from_bytes(bytes_data, strict=strict)
+
+
+    def can_from_bytes(self, bytes_data: bytes, *, strict: bool=True) -> bool:
+        """Check whether the bytes data is compatible with the model. If 'strict',
+        the function returns False if the model has an attribute already loaded
+        that would be changed.
+        """
+        try:
+            msg = srsly.msgpack_loads(bytes_data)
+        except ValueError:
+            return False
+        return self.can_from_dict(msg, strict=strict)
+
+    def can_from_dict(self, msg: Dict, *, strict: bool=True) -> bool:
+        """Check whether a dictionary is compatible with the model.
+        If 'strict', the function returns False if the model has an attribute
+        already loaded that would be changed.
+        """
+        if "nodes" not in msg.keys():
+            return False
+        nodes = list(self.walk())
+        if len(msg["nodes"]) != len(nodes):
+            return False
+
+        for i, node in enumerate(nodes):
+            info = msg["nodes"][i]
+            if strict and info["name"] != node.name:
+                return False
+            if len(msg["shims"][i]) != len(node.shims):
+                # TODO: The shims should have a check for this too, but
+                # for now we just check if the lengths match.
+                return False
+            for dim, value in info["dims"].items():
+                has_dim = node.has_dim(dim)
+                if has_dim is False:
+                    return False
+                elif has_dim and node.get_dim(dim) != value:
+                    return False
+            for param_name, value in msg["params"][i].items():
+                has_param = node.has_param(param_name)
+                if has_param is False:
+                    return False
+                elif has_param and value is not None:
+                    param = node.get_param(param_name)
+                    if param.shape != value.shape:
+                        return False
+            if strict:
+                for attr, value in msg["attrs"][i].items():
+                    if attr in node.attrs:
+                        try:
+
+                            serialized = serialize_attr(
+                                node.attrs[attr],
+                                node.attrs[attr],
+                                attr,
+                                node
+                            )
+                        except TypeError:
+                            continue
+                        if serialized != value:
+                            return False
+        return True
 
     def __add__(self, other: Any) -> "Model":
         """Apply the function bound to the '+' operator."""
@@ -654,51 +740,6 @@ def deserialize_attr(_: Any, value: Any, name: str, model: Model) -> Any:
     type to deserialize, e.g.: @deserialize_attr.register(MyCustomObject).
     """
     return srsly.msgpack_loads(value)
-
-
-def _jax_flatten_model(model):  # pragma: ignore
-    """A Jax flattener for Thinc models. Registering this (and the paired
-    unflatten function) allows Thinc models to be passed into Jax JIT-ed functions.
-
-    The model must have an attr "registered_constructor" that can rebuild the
-    model object via the layers registry, with no arguments. You should use a
-    constructor that doesn't allocate any parameters and works reasonably quickly.
-    """
-    registry_name = model.attrs["registry_name"]
-    msg = model.to_dict()
-    params = msg.pop("params")
-    param_values = []
-    param_keys = []
-    for i, param_info in enumerate(params):
-        for name, value in param_info.items():
-            param_values.append(value)
-            param_keys.append((i, name))
-    # param_values needs to be a flat list of leaf types, e.g. arrays. Notably,
-    # strings are not leaves!
-    # The aux data can be anything, but I think it shouldn't be variables?
-    return param_values, (registry_name, param_keys, msg)
-
-
-def _jax_unflatten_model(info, param_values):  # pragma: ignore
-    """The Jax unflattener, paired with jax_flatten_model"""
-    # This is pretty ugly. But I don't know where I can put this function
-    # that has access to the registry object without causing import circles?
-    from .config import registry
-
-    registry_name, param_keys, msg = info
-    model = registry.layers.get(registry_name)()
-    msg["params"] = [{} for _ in range(len(msg["nodes"]))]
-    for (i, name), value in zip(param_keys, param_values):
-        msg["params"][i][name] = value
-    return model.from_dict(msg)
-
-
-try:  # pragma: no cover
-    import jax.tree_util
-
-    jax.tree_util.register_pytree_node(Model, _jax_flatten_model, _jax_unflatten_model)
-except ImportError:  # pragma: no cover
-    pass
 
 
 _ModelT = TypeVar("_ModelT", bound=Model)

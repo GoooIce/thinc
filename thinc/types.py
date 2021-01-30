@@ -23,7 +23,7 @@ else:
 XY_YZ_OutT = TypeVar("XY_YZ_OutT")
 XY_XY_OutT = TypeVar("XY_XY_OutT")
 
-OpsNames = Literal["numpy", "cupy", "jax"]
+OpsNames = Literal["numpy", "cupy"]
 DeviceTypes = Literal["cpu", "gpu", "tpu"]
 Batchable = Union["Pairs", "Ragged", "Padded", "ArrayXd", List, Tuple]
 Xp = Union["numpy", "cupy"]  # type: ignore
@@ -71,6 +71,16 @@ _3_Key3d = Union[Slicish, Tuple[Slicish, Slicish], Tuple[Slicish, Slicish, Slici
 _3_AllKeys = Union[_3_KeyScalar, _3_Key1d, _3_Key2d, _3_Key3d]
 _F3_AllReturns = Union[float, "Floats1d", "Floats2d", "Floats3d"]
 _I3_AllReturns = Union[int, "Ints1d", "Ints2d", "Ints3d"]
+
+_4_KeyScalar = Tuple[int, int, int, int]
+_4_Key1d = Union[Tuple[int, int, int], Tuple[int, int, int, Slicish], Tuple[int, int, Slicish, int], Tuple[int, Slicish, int, int], Tuple[Slicish, int, int, int]]
+_4_Key2d = Union[Tuple[int, int], Tuple[int, int, Slicish], Tuple[int, Slicish, int], Tuple[Slicish, int, int], Tuple[int, int, Slicish, Slicish], Tuple[int, Slicish, int, Slicish], Tuple[int, Slicish, Slicish, int], Tuple[Slicish, int, int, Slicish], Tuple[Slicish, int, Slicish, int], Tuple[Slicish, Slicish, int, int]]
+_4_Key3d = Union[int, Tuple[int, Slicish], Tuple[Slicish, int], Tuple[int, Slicish, Slicish], Tuple[Slicish, int, Slicish], Tuple[Slicish, Slicish, int], Tuple[int, Slicish, Slicish, Slicish], Tuple[Slicish, int, Slicish, Slicish], Tuple[Slicish, Slicish, int, Slicish], Tuple[Slicish, Slicish, Slicish, int]]
+_4_Key4d = Union[Slicish, Tuple[Slicish, Slicish], Tuple[Slicish, Slicish, Slicish], Tuple[Slicish, Slicish, Slicish, Slicish]]
+_4_AllKeys = Union[_4_KeyScalar, _4_Key1d, _4_Key2d, _4_Key3d, _4_Key4d]
+_F4_AllReturns = Union[float, "Floats1d", "Floats2d", "Floats3d", "Floats4d"]
+_I4_AllReturns = Union[int, "Ints1d", "Ints2d", "Ints3d", "Ints4d"]
+
 
 # Typedefs for the reduction methods.
 Tru = Literal[True]
@@ -652,7 +662,31 @@ class Floats4d(_Array4d, _Floats):
         yield lambda v: validate_array(v, ndim=4, dtype="f")
 
     def __iter__(self) -> Iterator[Floats3d]: ...
-    # def __getitem__(self, key: int) -> Floats3d: ...
+
+    @overload
+    def __getitem__(self, key: _4_KeyScalar) -> float: ...
+    @overload
+    def __getitem__(self, key: _4_Key1d) -> Floats1d: ...
+    @overload
+    def __getitem__(self, key: _4_Key2d) -> Floats2d: ...
+    @overload
+    def __getitem__(self, key: _4_Key3d) -> Floats3d: ...
+    @overload
+    def __getitem__(self, key: _4_Key4d) -> "Floats4d": ...
+    def __getitem__(self, key: _4_AllKeys) -> _F4_AllReturns: ...
+
+    @overload
+    def __setitem__(self, key: _4_KeyScalar, value: float) -> None: ...
+    @overload
+    def __setitem__(self, key: _4_Key1d, value: Floats1d) -> None: ...
+    @overload
+    def __setitem__(self, key: _4_Key2d, value: Floats2d) -> None: ...
+    @overload
+    def __setitem__(self, key: _4_Key3d, value: Floats3d) -> None: ...
+    @overload
+    def __setitem__(self, key: _4_Key4d, value: "Floats4d") -> None: ...
+ 
+    def __setitem__(self, key: _4_AllKeys, value: _F4_AllReturns) -> None: ...
 
     @overload
     def sum(self, *, keepdims: Tru, axis: _4_AllAx = None, out: Optional["Floats4d"] = None) -> "Floats4d": ...
@@ -702,22 +736,6 @@ class Decorator(Protocol):
     """Protocol to mark a function as returning its child with identical signature."""
 
     def __call__(self, name: str) -> Callable[[_DIn], _DIn]: ...
-
-
-class Doc(Sized, Container):
-    """Type for spaCy Doc objects."""
-
-    T: "Doc"
-    base: Optional["Doc"]
-
-    @property
-    def doc(self) -> "Doc": ...
-    @property
-    def start(self) -> int: ...
-    @property
-    def end(self) -> int: ...
-
-    def to_array(self, attr_ids: Union[str, int, List[Union[str, int]]]) -> Ints2d: ...
 
 
 # fmt: on
@@ -770,6 +788,14 @@ class Padded:
     lengths: Ints1d
     indices: Ints1d
 
+    def copy(self):
+        return Padded(
+            self.data.copy(),
+            self.size_at_t.copy(),
+            self.lengths.copy(),
+            self.indices.copy()
+        )
+
     def __len__(self) -> int:
         return self.lengths.shape[0]
 
@@ -816,7 +842,7 @@ class Ragged:
     data: Array2d
     lengths: Ints1d
     data_shape: Tuple[int, ...]
-    _cumsums: Optional[Ints1d] = None
+    cumsums: Optional[Ints1d] = None
 
     def __init__(self, data: _Array, lengths: Ints1d):
         self.lengths = lengths
@@ -860,9 +886,9 @@ class Ragged:
             return Ragged(data.reshape(self.data_shape), self.lengths[index])
 
     def _get_cumsums(self) -> Ints1d:
-        if self._cumsums is None:
-            self._cumsums = self.lengths.cumsum()
-        return self._cumsums
+        if self.cumsums is None:
+            self.cumsums = self.lengths.cumsum()
+        return self.cumsums
 
     def _get_starts(self) -> Ints1d:
         cumsums = self._get_cumsums()

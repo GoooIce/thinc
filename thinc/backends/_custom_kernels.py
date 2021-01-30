@@ -34,10 +34,10 @@ def compile_mmh(src):
 
 
 PWD = Path(__file__).parent
-SRC = (PWD / "_custom_kernels.cu").open("r", encoding="utf8").read()
+SRC = (PWD / "_custom_kernels.cu").read_text(encoding="utf8")
 KERNELS = compile_kernels(SRC)
 
-MMH_SRC = (PWD / "_murmur3.cu").open("r", encoding="utf8").read()
+MMH_SRC = (PWD / "_murmur3.cu").read_text(encoding="utf8")
 KERNELS["hash"] = compile_mmh(MMH_SRC)
 
 seq2col_kernel = KERNELS["seq2col"]
@@ -100,7 +100,8 @@ def reduce_mean(X, lengths, out=None, threads_per_block=128, num_blocks=128):
     T = X.shape[0]
     O = X.shape[1]
     reduce_sum_kernel((num_blocks,), (threads_per_block,), (out, X, lengths, B, T, O))
-    out /= lengths.reshape((-1, 1))
+    # Avoid divide by zero
+    out /= lengths.reshape((-1, 1)) + 1e-10
     return out
 
 
